@@ -1,6 +1,19 @@
 pub trait Memory {
     fn mem_read(&self, addr: u16) -> u8;
     fn mem_write(&mut self, addr: u16, data: u8);
+    fn mem_read_signed(&self, addr: u16) -> i8 {
+        let data = self.mem_read(addr);
+        -(256 - data as i16) as i8
+    }
+    fn mem_write_signed(&mut self, addr: u16, data: i8) {
+        if data < 0 {
+            // negative
+            let data = (256 + data as i16) as u8;
+            self.mem_write(addr, data);
+        } else {
+            self.mem_write(addr, data as u8)
+        }
+    }
     fn mem_read_u16(&self, addr: u16) -> u16 {
         let lo = self.mem_read(addr);
         let hi = self.mem_read(addr + 1);
