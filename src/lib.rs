@@ -1,5 +1,5 @@
 use std::sync::{Arc, RwLock, Mutex};
-use enumflags2::{BitFlags, bitflags};
+use enumflags2::{BitFlags, bitflags, BitFlag};
 
 pub mod error;
 pub mod memory;
@@ -10,6 +10,7 @@ pub mod interrupts;
 use bus::Bus;
 use memory::Memory;
 use interrupts::Interrupt;
+use ops::AddressingMode;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 
@@ -34,7 +35,7 @@ pub struct Mos6502<'a> {
     pub index_y: u8,
     pub program_counter: u16,
     pub stack_pointer: u8,
-    pub interrupt: Option<Interrupt>,
+    pub interrupt: Option<Interrupt<'a>>,
     pub bus: Arc<RwLock<Bus<'a>>>,
 }
 
@@ -59,11 +60,162 @@ impl<'a> Mos6502<'a> {
             program_counter: 0,
             stack_pointer: 0,
             interrupt: None,
-            bus: bus.clone()
+            bus: bus.clone(),
         }))
     }
-    fn _reset(&mut self) {
-        todo!();
+    fn handle_interrupt(&mut self) -> u8 {
+        if let Some(interrupt) = self.interrupt.take() {
+            let mut flags: BitFlags<CpuFlags> = self.status.clone();
+            match interrupt {
+                Interrupt::NMI(handler_) => {
+                    self.stack_push_u16(self.program_counter); // Store PC
+                    self.stack_push(flags.bits());
+                    if let Some(mut handler) = handler_ {
+                        handler();
+                    }
+                    self.program_counter = self.mem_read_u16(0xFFFA);
+                    self.status.insert(CpuFlags::Interrupt);
+                    7
+                }
+                Interrupt::BRK(handler_) => {
+                    self.stack_push_u16(self.program_counter);
+                    flags.insert(CpuFlags::Break);
+                    self.stack_push(flags.bits());
+                    if let Some(mut handler) = handler_ {
+                        handler();
+                    }
+                    self.program_counter = self.mem_read_u16(0xFFFE);
+                    self.status.insert(CpuFlags::Interrupt);
+                    6
+                }
+                Interrupt::IRQ(handler_) => {
+                    self.stack_push_u16(self.program_counter);
+                    self.stack_push(flags.bits());
+                    if let Some(mut handler) = handler_ {
+                        handler();
+                    }
+                    self.program_counter = self.mem_read_u16(0xFFFE);
+                    self.status.insert(CpuFlags::Interrupt);
+                    6
+                }
+                Interrupt::RESET => {
+                    self.reset();
+                    8
+                }
+            }
+        } else {
+            0
+        }
+    }
+    fn get_operand_address(&mut self, mode: AddressingMode) -> (u16, bool) {
+        const fn page_crossed(addr1: u16, addr2: u16) -> bool {
+            (addr1 & 0xFF00) != (addr2 & 0xFF00)
+        }
+        match mode {
+            AddressingMode::Immediate => (self.program_counter, false),
+            AddressingMode::Absolute => (self.mem_read_u16(self.program_counter), false),
+            AddressingMode::ZeroPage => (self.mem_read(self.program_counter) as u16, false),
+            AddressingMode::Indirect => {
+                let addr = self.mem_read_u16(self.program_counter);
+                (self.mem_read_u16(addr), false)
+            }
+            AddressingMode::AbsoluteX => {
+                let absolute_addr = self.mem_read_u16(self.program_counter);
+                let effective_addr = absolute_addr.wrapping_add(self.index_x as u16);
+                (effective_addr, page_crossed(absolute_addr, effective_addr))
+            }
+            AddressingMode::AbsoluteY => {
+                let absolute_addr = self.mem_read_u16(self.program_counter);
+                let effective_addr = absolute_addr.wrapping_add(self.index_y as u16);
+                (effective_addr, page_crossed(absolute_addr, effective_addr))
+            }
+            AddressingMode::ZeroPageX => {
+                let addr = self.mem_read(self.program_counter);
+                (addr.wrapping_add(self.index_x) as u16, false)
+            }
+            AddressingMode::ZeroPageY => {
+                let addr = self.mem_read(self.program_counter);
+                (addr.wrapping_add(self.index_y) as u16, false)
+            }
+            AddressingMode::IndirectX => {
+                let addr = self.mem_read(self.program_counter);
+                let zpg = addr.wrapping_add(self.index_x) as u16;
+                (self.mem_read_u16_wrap(zpg), false)
+            }
+            AddressingMode::IndirectY => {
+                let addr = self.mem_read(self.program_counter);
+                let zpg = self.mem_read_u16_wrap(addr as u16);
+                let addr = zpg + self.index_y as u16;
+                (addr, page_crossed(zpg, addr))
+            }
+            AddressingMode::Relative => {
+                let offset = self.mem_read(self.program_counter);
+                let mut addr = self.program_counter + 1 + offset as u16;
+                if offset >= 0x80 {
+                    addr -= 0x100;
+                }
+                (addr, false)
+            }
+            _ => (0, false)
+        }
+    }
+    fn execute(&mut self) {
+        let mut stall_cycles: u16 = 0;
+        let mut cpu_cycles: u16 = 0;
+        loop {
+            if stall_cycles > 0 {
+                stall_cycles -= 1;
+                continue;
+            }
+            if cpu_cycles == 0 {
+                break;
+            }
+            let interrupt_cycles = self.handle_interrupt();
+            if interrupt_cycles as u16 > cpu_cycles {
+                stall_cycles = interrupt_cycles as u16 - cpu_cycles;
+                cpu_cycles = 0;
+            } else {
+                cpu_cycles -= interrupt_cycles as u16;
+            }
+            if interrupt_cycles > 0 {
+                continue;
+            }
+            let instruction = self.mem_read(self.program_counter);
+            self.program_counter += 1;
+            // TODO: Stuff
+        }
+    }
+    fn reset(&mut self) {
+        self.stack_pointer = 0xFD;
+        self.status = BitFlags::default();
+        self.index_x = 0;
+        self.index_y = 0;
+        self.accumulator = 0;
+        self.program_counter = self.mem_read_u16(0xFFFC);
+    }
+    /// Decrement the stack pointer and read the value stored.
+    fn stack_pop(&mut self) -> u8 {
+        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+        let addr = u16::from_le_bytes([self.stack_pointer, 0x01]);
+        self.mem_read(addr)
+    }
+    /// Push data to the stack and increment the pointer.
+    fn stack_push(&mut self, data: u8) {
+        let addr = u16::from_le_bytes([self.stack_pointer, 0x01]);
+        self.mem_write(addr, data);
+        self.stack_pointer = self.stack_pointer.wrapping_add(1);
+    }
+    /// Push a 16-bit value to the stack
+    fn stack_push_u16(&mut self, data: u16) {
+        let bytes = u16::to_le_bytes(data);
+        self.stack_push(bytes[0]);
+        self.stack_push(bytes[1]);
+    }
+    /// Pop a 16-bit value from the stack
+    fn stack_pop_u16(&mut self) -> u16 {
+        let hi = self.stack_pop();
+        let lo = self.stack_pop();
+        u16::from_le_bytes([lo, hi])
     }
 }
 
