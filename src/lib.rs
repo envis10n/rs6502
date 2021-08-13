@@ -1,6 +1,10 @@
 use std::sync::{Arc, RwLock, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
+use std::collections::HashMap;
 use enumflags2::{BitFlags, bitflags};
+
+#[macro_use]
+extern crate lazy_static;
 
 pub mod error;
 pub mod memory;
@@ -171,7 +175,8 @@ impl<'a> Mos6502<'a> {
             _ => (0, false)
         }
     }
-    fn execute(&mut self) {
+    fn execute(&mut self) -> Result<()> {
+        let ref opcodes: HashMap<u8, &'static ops::OpCode> = *ops::OPCODES_MAP;
         let tick_delta = self.get_tick_delta();
         let mut stall_cycles: u32 = 0;
         let mut cpu_cycles: u32 = (tick_delta * self.clock_speed * self.clock_frequency) as u32;
@@ -181,7 +186,7 @@ impl<'a> Mos6502<'a> {
                 continue;
             }
             if cpu_cycles == 0 {
-                break;
+                break Ok(());
             }
             let interrupt_cycles = self.handle_interrupt();
             // Check if it would wrap
@@ -196,7 +201,19 @@ impl<'a> Mos6502<'a> {
             }
             let instruction = self.mem_read(self.program_counter);
             self.program_counter += 1;
-            // TODO: Stuff
+            let program_counter_state = self.program_counter;
+            if let Some(opcode) = opcodes.get(&instruction) {
+                let mut page_crossed = false;
+                /*match instruction {
+                    _ => todo!(),
+                }*/
+                cpu_cycles -= opcode.cycles as u32;
+                if program_counter_state == self.program_counter {
+                    self.program_counter += (opcode.len - 1) as u16 + if page_crossed { 1 } else { 0 };
+                }
+            } else {
+                break Err(error::Error::UnknownOpCode(instruction));
+            }
         }
     }
     fn reset(&mut self) {
