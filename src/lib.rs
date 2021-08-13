@@ -161,8 +161,8 @@ impl<'a> Mos6502<'a> {
                 (addr, page_crossed(zpg, addr))
             }
             AddressingMode::Relative => {
-                let offset = self.mem_read(self.program_counter);
-                let mut addr = self.program_counter + 1 + offset as u16;
+                let offset = self.mem_read_signed(self.program_counter) as i16;
+                let mut addr = (self.program_counter as i16 + 1 + offset) as u16;
                 if offset >= 0x80 {
                     addr -= 0x100;
                 }
@@ -298,6 +298,57 @@ impl<'a> Mos6502<'a> {
             self.mem_write(addr, data);
         }
         self.update_zero_negative_flags(data);
+        false
+    }
+    /// Branch if Carry Clear
+    fn bcc(&mut self, mode: AddressingMode) -> bool {
+        let (addr, page_cross) = self.get_operand_address(mode);
+        if self.status.contains(CpuFlags::Carry) {
+            self.program_counter += 1;
+        } else {
+            self.program_counter = addr;
+        }
+        page_cross
+    }
+    /// Branch if Carry Set
+    fn bcs(&mut self, mode: AddressingMode) -> bool {
+        let (addr, page_cross) = self.get_operand_address(mode);
+        if self.status.contains(CpuFlags::Carry) {
+            self.program_counter = addr;
+        } else {
+            self.program_counter += 1;
+        }
+        page_cross
+    }
+    /// Branch if Equal
+    fn beq(&mut self, mode: AddressingMode) -> bool {
+        let (addr, page_cross) = self.get_operand_address(mode);
+        if self.status.contains(CpuFlags::Zero) {
+            self.program_counter = addr;
+        } else {
+            self.program_counter += 1;
+        }
+        page_cross
+    }
+    /// Bit Test
+    fn bit(&mut self, mode: AddressingMode) -> bool {
+        let (addr, _) = self.get_operand_address(mode);
+        let mask = self.mem_read(addr);
+        if self.accumulator & mask == 0 {
+            self.status.insert(CpuFlags::Zero);
+        } else {
+            self.status.remove(CpuFlags::Zero);
+        }
+        if mask & 0b10000000 != 0 {
+            self.status.insert(CpuFlags::Negative);
+        } else {
+            self.status.remove(CpuFlags::Negative);
+        }
+        if mask & 0b01000000 != 0 {
+            self.status.insert(CpuFlags::Overflow);
+        } else {
+            self.status.remove(CpuFlags::Overflow);
+        }
         false
     }
 }
