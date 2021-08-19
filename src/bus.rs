@@ -8,6 +8,21 @@ pub struct Bus<'a> {
     memory_map: HashMap<(u16, u16), Arc<RwLock<dyn Memory + 'a>>>
 }
 
+pub trait MemoryMapper<'a> {
+    fn map_region<C>(&mut self, start: u16, end: u16, controller: Arc<RwLock<C>>) -> Result<()> where C: Memory + 'a;
+}
+
+impl<'a> Memory for Arc<RwLock<Bus<'a>>> {
+    fn mem_read(&self, addr: u16) -> u8 {
+        let reader = self.read().unwrap();
+        (*reader).mem_read(addr)
+    }
+    fn mem_write(&mut self, addr: u16, data: u8) {
+        let mut writer = self.write().unwrap();
+        (*writer).mem_write(addr, data);
+    }
+}
+
 impl<'a> Memory for Bus<'a> {
     fn mem_read(&self, addr: u16) -> u8 {
         if let Some(region) = self.get_region_place(addr) {
@@ -57,12 +72,22 @@ impl<'a> Bus<'a> {
         }
         result
     }
-    pub fn map_region<C>(&mut self, start: u16, end: u16, controller: Arc<RwLock<C>>) -> Result<()> where C: Memory + 'a {
+}
+
+impl<'a> MemoryMapper<'a> for Bus<'a> {
+    fn map_region<C>(&mut self, start: u16, end: u16, controller: Arc<RwLock<C>>) -> Result<()> where C: Memory + 'a {
         if let Some(key) = self.get_region_key(start, end) {
             Err(Error::MemoryMapConflict(key))
         } else {
             self.memory_map.insert((start, end), controller.clone());
             Ok(())
         }
+    }
+}
+
+impl<'a> MemoryMapper<'a> for Arc<RwLock<Bus<'a>>> {
+    fn map_region<C>(&mut self, start: u16, end: u16, controller: Arc<RwLock<C>>) -> Result<()> where C: Memory + 'a {
+        let mut writer = self.write().unwrap();
+        (*writer).map_region(start, end, controller)
     }
 }
