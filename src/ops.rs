@@ -353,13 +353,13 @@ lazy_static! {
         OpCode::new(0x73, "*RRA", 2, 8, AddressingMode::IndirectY), // STP ADC
 
         // INC SBC
-        OpCode::new(0xe7, "*ISB", 2,5, AddressingMode::ZeroPage),
-        OpCode::new(0xf7, "*ISB", 2,6, AddressingMode::ZeroPageX),
-        OpCode::new(0xef, "*ISB", 3,6, AddressingMode::Absolute),
-        OpCode::new(0xff, "*ISB", 3,7, AddressingMode::AbsoluteX),
-        OpCode::new(0xfb, "*ISB", 3,7, AddressingMode::AbsoluteY), // NOP SBC
-        OpCode::new(0xe3, "*ISB", 2,8, AddressingMode::IndirectX), // STP SBC
-        OpCode::new(0xf3, "*ISB", 2,8, AddressingMode::IndirectY), // STP SBC
+        OpCode::new(0xe7, "*ISC", 2,5, AddressingMode::ZeroPage),
+        OpCode::new(0xf7, "*ISC", 2,6, AddressingMode::ZeroPageX),
+        OpCode::new(0xef, "*ISC", 3,6, AddressingMode::Absolute),
+        OpCode::new(0xff, "*ISC", 3,7, AddressingMode::AbsoluteX),
+        OpCode::new(0xfb, "*ISC", 3,7, AddressingMode::AbsoluteY), // NOP SBC
+        OpCode::new(0xe3, "*ISC", 2,8, AddressingMode::IndirectX), // STP SBC
+        OpCode::new(0xf3, "*ISC", 2,8, AddressingMode::IndirectY), // STP SBC
 
         // NOP
         OpCode::new(0x02, "*NOP", 1,2, AddressingMode::NoneAddressing),

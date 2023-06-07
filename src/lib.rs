@@ -1,5 +1,6 @@
 use enumflags2::{bitflags, BitFlags};
 use std::collections::HashMap;
+use std::ops::Add;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
@@ -106,8 +107,8 @@ impl<'a> Trace for Mos6502<'a> {
                         "(${:02x},X) @ {:02x} = {:04x} = {:02x}",
                         address,
                         (address.wrapping_add(cpu.index_x)),
-                        mem_addr,
-                        stored_value
+                        self.mem_read_u16(address.wrapping_add(cpu.index_x) as u16),
+                        self.mem_read(self.mem_read_u16(address.wrapping_add(cpu.index_x) as u16))
                     ),
                     AddressingMode::IndirectY => format!(
                         "(${:02x}),Y = {:04x} @ {:04x} = {:02x}",
@@ -179,8 +180,8 @@ impl<'a> Trace for Mos6502<'a> {
             .to_string();
 
         format!(
-            "{:47} A:{:02x} X:{:02x} Y:{:02x} P:{:02x} SP:{:02x}",
-            asm_str, cpu.accumulator, cpu.index_x, cpu.index_y, cpu.status, cpu.stack_pointer,
+            "{:47} A:{:02x} X:{:02x} Y:{:02x} P:{:08b} SP:{:02x} | 02h: {:02x} 03h: {:02x}",
+            asm_str, cpu.accumulator, cpu.index_x, cpu.index_y, cpu.status, cpu.stack_pointer, cpu.mem_read(0x0002), cpu.mem_read(0x0003)
         )
         .to_ascii_uppercase()
     }
@@ -303,9 +304,8 @@ impl<'a> Mos6502<'a> {
             AddressingMode::IndirectX => {
                 let base = self.mem_read(addr) as u16;
                 let ptr = (base as u8).wrapping_add(self.index_x);
-                let lo = self.mem_read(ptr as u16);
-                let hi = self.mem_read(ptr.wrapping_add(1) as u16);
-                ((hi as u16) << 8 | (lo as u16), false)
+                let mem_addr = self.mem_read_u16_wrap(ptr as u16 & 0x00FF);
+                (mem_addr, false)
             }
             AddressingMode::IndirectY => {
                 let base = self.mem_read(addr) as u16;
@@ -314,6 +314,9 @@ impl<'a> Mos6502<'a> {
                 let deref_base = (hi as u16) << 8 | (lo as u16);
                 let deref = deref_base.wrapping_add(self.index_y as u16);
                 (deref, page_crossed(deref, deref_base))
+            }
+            AddressingMode::NoneAddressing => {
+                (0x0000, false)
             }
             _ => panic!("mode {:?} is not supported", mode),
         }
@@ -497,11 +500,11 @@ impl<'a> Mos6502<'a> {
                         opcode.cycles
                     }
                     "CLC" => {
-                        self.clc();
+                        self.status.remove(CpuFlags::Carry);
                         opcode.cycles
                     }
                     "SEC" => {
-                        self.sec();
+                        self.status.insert(CpuFlags::Carry);
                         opcode.cycles
                     }
                     "SEI" => {
@@ -576,9 +579,8 @@ impl<'a> Mos6502<'a> {
                         opcode.cycles
                     }
                     "*SRE" => {
-                        let data = self.lsr(&opcode.mode);
-                        self.accumulator = data ^ self.accumulator;
-                        self.update_zero_negative_flags(self.accumulator);
+                        self.lsr(&opcode.mode);
+                        self.eor(&opcode.mode);
                         opcode.cycles
                     }
                     "*AXS" => {
@@ -597,25 +599,9 @@ impl<'a> Mos6502<'a> {
                     "*ARR" => {
                         let (addr, _) = self.get_operand_address(&opcode.mode);
                         let data = self.mem_read(addr);
-                        self.accumulator = data & self.accumulator;
+                        self.accumulator = self.accumulator & data;
                         self.update_zero_negative_flags(self.accumulator);
                         self.ror(&opcode.mode);
-                        let result = self.accumulator;
-                        let bit_5 = (result >> 5) & 1;
-                        let bit_6 = (result >> 6) & 1;
-
-                        if bit_6 == 1 {
-                            self.status.insert(CpuFlags::Carry);
-                        } else {
-                            self.status.remove(CpuFlags::Carry);
-                        }
-                        if bit_5 ^ bit_6 == 1 {
-                            self.status.insert(CpuFlags::Overflow);
-                        } else {
-                            self.status.remove(CpuFlags::Overflow);
-                        }
-
-                        self.update_zero_negative_flags(result);
                         opcode.cycles
                     }
                     "*SBC" => {
@@ -649,9 +635,9 @@ impl<'a> Mos6502<'a> {
                         self.add_to_accumulator(data);
                         opcode.cycles
                     }
-                    "*ISB" => {
-                        let data = self.inc(&opcode.mode);
-                        self.sub_from_accumulator(data);
+                    "*ISC" => {
+                        self.inc(&opcode.mode);
+                        self.sbc(&opcode.mode);
                         opcode.cycles
                     }
                     "*LAX" => {
@@ -777,8 +763,8 @@ impl<'a> Mos6502<'a> {
     }
     /// Pop a 16-bit value from the stack
     fn stack_pop_u16(&mut self) -> u16 {
-        let hi = self.stack_pop() as u16;
         let lo = self.stack_pop() as u16;
+        let hi = self.stack_pop() as u16;
         hi << 8 | lo
     }
     /// Sets the Carry flag
@@ -802,17 +788,10 @@ impl<'a> Mos6502<'a> {
             self.status.remove(CpuFlags::Negative);
         }
     }
-    /// Set the accumulator
-    fn add_to_accumulator(&mut self, value: u8) {
-        let sum = self.accumulator as u16
-            + value as u16
-            + (if self.status.contains(CpuFlags::Carry) {
-                1
-            } else {
-                0
-            }) as u16;
+    fn sub_from_accumulator(&mut self, value: u8) {
+        let sum = self.accumulator.wrapping_add(value.wrapping_neg().wrapping_sub(if self.status.contains(CpuFlags::Carry) { 0 } else { 1 }));
 
-        let carry = sum > 0xff;
+        let carry = sum & 0b10000000 != 0;
 
         if carry {
             self.status.insert(CpuFlags::Carry);
@@ -831,8 +810,32 @@ impl<'a> Mos6502<'a> {
         self.accumulator = result;
         self.update_zero_negative_flags(self.accumulator);
     }
-    fn sub_from_accumulator(&mut self, value: u8) {
-        self.add_to_accumulator(((value as i8).wrapping_neg().wrapping_sub(1)) as u8);
+    /// Set the accumulator
+    fn add_to_accumulator(&mut self, value: u8) {
+        let sum = self.accumulator.wrapping_add(value).wrapping_add(if self.status.contains(CpuFlags::Carry) {
+            1
+        } else {
+            0
+        });
+
+        let carry = sum & 0b10000000 != 0;
+
+        if carry {
+            self.status.insert(CpuFlags::Carry);
+        } else {
+            self.status.remove(CpuFlags::Carry);
+        }
+
+        let result = sum as u8;
+
+        if (value ^ result) & (result ^ self.accumulator) & 0x80 != 0 {
+            self.status.insert(CpuFlags::Overflow);
+        } else {
+            self.status.remove(CpuFlags::Overflow);
+        }
+
+        self.accumulator = result;
+        self.update_zero_negative_flags(self.accumulator);
     }
     // MOS 6502 Instruction Handlers
     /// Add with Carry
@@ -944,12 +947,27 @@ impl<'a> Mos6502<'a> {
     fn compare(&mut self, mode: &AddressingMode, target: u8) -> bool {
         let (addr, page_cross) = self.get_operand_address(mode);
         let data = self.mem_read(addr);
-        if data <= target {
-            self.sec();
+        let negt = target.wrapping_sub(data) & 0b10000000 != 0;
+        if target < data {
+            self.status.remove(CpuFlags::Carry);
+            self.status.remove(CpuFlags::Zero);
+        } else if target > data {
+            self.status.insert(CpuFlags::Carry);
+            self.status.remove(CpuFlags::Zero);
         } else {
-            self.clc();
+            self.status.insert(CpuFlags::Carry);
+            self.status.insert(CpuFlags::Zero);
         }
-        self.update_zero_negative_flags(target.wrapping_sub(data));
+        // Set Negative Flag
+        if target > data || target < data {
+            if negt {
+                self.status.insert(CpuFlags::Negative);
+            } else {
+                self.status.remove(CpuFlags::Negative);
+            }
+        } else {
+            self.status.remove(CpuFlags::Negative);
+        }
         page_cross
     }
     /// Decrement Memory

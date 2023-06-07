@@ -3,7 +3,7 @@ use rs6502::{
     memory::Memory,
     CpuFlags, Mos6502,
 };
-use std::sync::{Arc, RwLock};
+use std::{sync::{Arc, RwLock}, thread, time::Duration};
 
 const NES_TAG: [u8; 4] = [0x4e, 0x45, 0x53, 0x1a];
 const PRG_ROM_PAGE_SIZE: usize = 16384;
@@ -109,13 +109,15 @@ pub fn main() {
     let ram = RAMChip::new();
 
     bus.map_region(RAM, RAM_MIRRORS_END, ram.clone()).unwrap();
-    bus.map_region(0x8000, 0xFFFF, rom.clone()).unwrap();
+    bus.map_region(PPU_REGISTERS, PPU_REGISTERS_MIRRORS_END, ram.clone()).unwrap();
+    bus.map_region(0x4020, 0xFFFF, rom.clone()).unwrap();
 
     let cpu = Mos6502::new(bus.clone());
     {
         let mut mos = cpu.lock().unwrap();
         (*mos).reset();
         (*mos).program_counter = 0xc000;
+        println!("Running Ultimate NES Test ROM...");
         loop {
             if (*mos).status.contains(CpuFlags::Break) {
                 break;
@@ -124,5 +126,8 @@ pub fn main() {
                 panic!("{}", err);
             }
         }
+        let result_a = (*mos).mem_read(0x0002);
+        let result_b = (*mos).mem_read(0x0003);
+        println!("Results: 0x{:02x}, 0x{:02x}", result_a, result_b);
     }
 }
